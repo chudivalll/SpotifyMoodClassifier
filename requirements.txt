@@ -1,0 +1,27 @@
+# API and Authentication
+spotipy==2.23.0
+python-dotenv==1.0.0
+
+# Data Processing and Analysis
+pandas==2.0.0
+numpy==1.24.3
+openpyxl==3.1.2
+tqdm==4.65.0
+matplotlib==3.7.1
+seaborn==0.12.2
+plotly==5.14.1
+
+# Machine Learning
+scikit-learn==1.2.2
+
+# Testing
+pytest>=7.4.0
+
+# Web Scraping
+requests==2.31.0
+beautifulsoup4==4.12.2
+lxml==4.9.2
+
+# Jupyter Notebook
+jupyter==1.0.0
+notebook==6.5.4 
