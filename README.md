@@ -1,8 +1,6 @@
 # Spotify Mood Classifier
 
-Classifies songs by mood (happy, sad, aggressive, chill) using audio features and ML clustering.
-
-Uses the energy/valence quadrant model from music information retrieval — high energy + high valence = happy, low energy + low valence = sad, etc. Trains multiple classifiers (Naive Bayes, Random Forest, Gradient Boosting, Decision Tree) and compares accuracy.
+Classifies songs by mood (happy, sad, aggressive, chill) using audio features and ML clustering. Includes a web interface that gives you a mini "Spotify Wrapped" for any playlist — mood breakdown, genre DNA, decade timeline, and cultural context for each song.
 
 ## Quick start
 
@@ -10,32 +8,26 @@ Uses the energy/valence quadrant model from music information retrieval — high
 python -m venv spotify_env
 source spotify_env/bin/activate
 pip install -r requirements.txt
-
-python run_pipeline.py
 ```
 
-That's it — runs on the bundled sample dataset, no API keys needed.
-
-## Using your own playlist
-
-If you have Spotify API credentials from before Nov 2024 (with audio features access):
+### Run the website
 
 ```bash
-cp .env.example .env
-# fill in your credentials
-
-python run_pipeline.py --mode live --playlist 6jgCEkpKSc7LQI8ZWdAVr6
+python web/app.py
 ```
 
-If your app was registered after Nov 2024, audio features will return 403. The pipeline automatically falls back to heuristic estimation based on genre, popularity, and release date.
+Open `http://127.0.0.1:5000` — click "Try Demo" to see the full experience without any API keys.
 
-You can also run on any CSV with the right columns:
+To connect your own Spotify account, add your credentials to `.env` (copy from `.env.example`) and click "Connect Spotify" on the landing page. The app will show your playlists and let you analyze any of them.
+
+### Run the CLI pipeline
 
 ```bash
-python run_pipeline.py --data my_tracks.csv
+python run_pipeline.py                                    # sample data
+python run_pipeline.py --mode live --playlist <ID>        # your playlist
 ```
 
-## How the mood classification works
+## How mood classification works
 
 Songs are classified into 4 moods based on energy (arousal) and valence (positivity):
 
@@ -51,24 +43,24 @@ Low Energy ---+--- High Energy
          Low Valence
 ```
 
-The pipeline trains 4 classifiers on these labels and picks the best one. It also runs KMeans clustering as an unsupervised alternative.
+## What the website shows
+
+- **Mood breakdown** — visual split of happy/sad/aggressive/chill tracks
+- **Genre DNA** — genre fingerprint of your taste
+- **Decade timeline** — when your music was made
+- **Album cover grid** — click any cover to reveal the cultural story behind the song (where samples came from, what the artist was going through, why the song mattered historically)
 
 ## Project structure
 
-- `run_pipeline.py` — main entry point
-- `src/mood_classifier.py` — mood labeling logic (energy/valence quadrants)
-- `src/data_collection/` — Spotify API scripts (basic, enhanced, simple)
-- `src/data_processing/` — feature estimation, BPM scraping, data cleanup
+- `web/` — Flask app + templates for the website
+- `run_pipeline.py` — CLI entry point
+- `src/mood_classifier.py` — mood labeling logic
+- `src/data_collection/` — Spotify API scripts
+- `src/data_processing/` — feature estimation, BPM scraping
 - `src/pipelines/` — ML training pipeline + Airflow DAG
-- `src/aws_deployment/` — SageMaker training/inference scripts
-- `data/sample/` — bundled sample dataset (76 tracks with audio features)
-- `notebooks/` — Jupyter notebooks for exploration
-- `tests/` — API connection and auth validation scripts
+- `src/aws_deployment/` — SageMaker training/inference
+- `data/sample/` — bundled 76-track sample dataset
 
 ## API restrictions
 
-As of Nov 2024, Spotify locked down audio features, audio analysis, and recommendations for new apps. This project handles that by:
-
-1. Gracefully catching the 403 and logging a clear message
-2. Falling back to heuristic feature estimation from available metadata
-3. Shipping a sample dataset so the ML pipeline works out of the box
+As of Nov 2024, Spotify locked down audio features for new apps. The project handles this by catching the 403, falling back to heuristic estimation, and shipping a sample dataset so everything works out of the box.
