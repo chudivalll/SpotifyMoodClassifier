@@ -6,7 +6,8 @@ venv/
 .spotify_cache
 src/.cache
 *.xlsx
-data/
+data/*
+!data/sample/
 .ipynb_checkpoints/
 .DS_Store
 Thumbs.db

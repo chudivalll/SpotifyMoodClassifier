@@ -15,6 +15,11 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import accuracy_score
 
 from src.data_collection.spotify_ML import get_playlist_tracks, get_audio_features
+from src.data_processing.add_missing_columns import estimate_audio_features
+from src.mood_classifier import assign_moods
+
+FEATURE_COLS = ['tempo', 'danceability', 'energy', 'loudness', 'valence',
+                'acousticness', 'speechiness', 'instrumentalness']
 
 
 def load_data():
@@ -24,21 +29,28 @@ def load_data():
     audio_features = get_audio_features(track_ids)
 
     df_tracks = pd.DataFrame(tracks_data)
-    df_features = pd.DataFrame(audio_features)
-    df_final = pd.merge(df_tracks, df_features, on="Track ID")
-    df_final.to_csv('data/processed/spotify_features.csv', index=False)
+
+    if audio_features:
+        df_features = pd.DataFrame(audio_features)
+        df = pd.merge(df_tracks, df_features, left_on='Track ID', right_on='id', how='left')
+    else:
+        df = df_tracks
+
+    df = estimate_audio_features(df)
+    df.to_csv('data/processed/spotify_features.csv', index=False)
 
 
 def preprocess_data():
     df = pd.read_csv('data/processed/spotify_features.csv')
-    features_df = df[['BPM', 'Danceability', 'Energy', 'Loudness', 'Valence']]
-    features_df.to_csv('data/processed/preprocessed_features.csv', index=False)
+    df = assign_moods(df)
+    available = [c for c in FEATURE_COLS if c in df.columns]
+    df[available + ['mood']].to_csv('data/processed/preprocessed_features.csv', index=False)
 
 
 def split_data():
     df = pd.read_csv('data/processed/preprocessed_features.csv')
-    X = df.drop(columns=['Energy'])
-    y = df['Energy'] > 0.5
+    X = df.drop(columns=['mood'])
+    y = df['mood']
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
 

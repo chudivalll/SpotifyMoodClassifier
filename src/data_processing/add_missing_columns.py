@@ -1,116 +1,179 @@
+"""
+Estimate missing audio features from track metadata (genre, popularity, etc.)
+when Spotify's audio features endpoint is unavailable.
+
+Can be run standalone or imported as a module.
+"""
 import os
 import pandas as pd
 from pathlib import Path
 
-spotify_dir = Path(__file__).parent.parent.parent
-os.chdir(str(spotify_dir))
 
-input_file = "spotify_playlist_ml_enhanced_amix.xlsx"
-output_file = "spotify_playlist_complete.xlsx"
+def estimate_audio_features(df):
+    """Add estimated audio feature columns to a DataFrame.
 
-print(f"Reading {input_file}...")
-df = pd.read_excel(input_file)
-print(f"{len(df)} tracks loaded")
+    Expects columns: popularity (0-100).
+    Optional: primary_genre (or Primary Genre), release_date (or Release Date), explicit.
+    Returns the DataFrame with tempo, danceability, energy, valence,
+    acousticness, speechiness, instrumentalness columns added.
+    """
+    df = df.copy()
+
+    # normalize column names — accept both formats
+    col_map = {}
+    for col in df.columns:
+        col_map[col.lower().replace(' ', '_')] = col
+
+    def _get_col(name, default=None):
+        """Find a column by normalized name."""
+        if name in df.columns:
+            return name
+        normalized = name.lower().replace(' ', '_')
+        return col_map.get(normalized, default)
+
+    genre_col = _get_col('primary_genre') or _get_col('Primary Genre')
+    pop_col = _get_col('popularity') or _get_col('Popularity')
+    date_col = _get_col('release_date') or _get_col('Release Date')
+    explicit_col = _get_col('explicit') or _get_col('Explicit')
+
+    # derive release year if we have a date column
+    if date_col and 'release_year' not in [c.lower() for c in df.columns]:
+        df['release_year'] = df[date_col].astype(str).str[:4]
+        df['release_year'] = pd.to_numeric(df['release_year'], errors='coerce').fillna(2020).astype(int)
+    year_col = _get_col('release_year') or _get_col('Release Year')
+
+    def _genre(row):
+        if genre_col and pd.notna(row.get(genre_col)):
+            return str(row[genre_col]).lower()
+        return ''
+
+    def _pop(row):
+        if pop_col:
+            return row.get(pop_col, 50) or 50
+        return 50
+
+    def _year(row):
+        if year_col:
+            v = row.get(year_col, 2020)
+            try:
+                return int(v) if pd.notna(v) else 2020
+            except (ValueError, TypeError):
+                return 2020
+        return 2020
+
+    def _explicit(row):
+        if explicit_col:
+            return bool(row.get(explicit_col, False))
+        return False
+
+    # only estimate columns that don't already exist
+    if 'tempo' not in df.columns:
+        def est_tempo(row):
+            genre = _genre(row)
+            if 'rap' in genre or 'hip hop' in genre:
+                base = 95
+            elif 'r&b' in genre:
+                base = 90
+            elif 'rock' in genre:
+                base = 120
+            elif 'pop' in genre:
+                base = 110
+            elif 'electronic' in genre:
+                base = 128
+            else:
+                base = 100
+
+            year = _year(row)
+            era_adj = -5 if year < 1980 else (5 if year < 2000 else 10 if year >= 2010 else 0)
+            pop_adj = (_pop(row) / 100 - 0.5) * 20
+            return max(60, min(180, base + era_adj + pop_adj))
+
+        df['tempo'] = df.apply(est_tempo, axis=1)
+
+    if 'danceability' not in df.columns:
+        def est_dance(row):
+            tempo_factor = 1 - abs((row['tempo'] - 110) / 100)
+            pop_factor = _pop(row) / 100
+            return max(0.1, min(0.95, tempo_factor * 0.6 + pop_factor * 0.4))
+
+        df['danceability'] = df.apply(est_dance, axis=1)
+
+    if 'energy' not in df.columns:
+        def est_energy(row):
+            pop_factor = _pop(row) / 100
+            explicit_bump = 0.1 if _explicit(row) else 0
+            year_factor = (_year(row) - 1950) / 100
+            return max(0.1, min(0.95, pop_factor * 0.4 + year_factor * 0.4 + explicit_bump))
+
+        df['energy'] = df.apply(est_energy, axis=1)
+
+    if 'valence' not in df.columns:
+        def est_valence(row):
+            genre = _genre(row)
+            if 'pop' in genre:
+                base = 0.7
+            elif 'r&b' in genre:
+                base = 0.6
+            elif 'rock' in genre:
+                base = 0.4
+            else:
+                base = 0.5
+            adj = (_pop(row) / 100 - 0.5) * 0.2
+            return max(0.1, min(0.95, base + adj))
+
+        df['valence'] = df.apply(est_valence, axis=1)
+
+    if 'acousticness' not in df.columns:
+        df['acousticness'] = df['energy'].apply(lambda e: max(0.05, min(0.95, 1 - e)))
+
+    if 'speechiness' not in df.columns:
+        def est_speech(row):
+            genre = _genre(row)
+            if 'rap' in genre or 'hip hop' in genre:
+                base = 0.7
+            elif 'r&b' in genre:
+                base = 0.3
+            else:
+                base = 0.1
+            adj = (_pop(row) / 100 - 0.5) * 0.1
+            return max(0.01, min(0.95, base + adj))
+
+        df['speechiness'] = df.apply(est_speech, axis=1)
+
+    if 'instrumentalness' not in df.columns:
+        df['instrumentalness'] = df['speechiness'].apply(lambda s: max(0.01, min(0.95, 1 - s)))
+
+    if 'loudness' not in df.columns:
+        df['loudness'] = df['energy'].apply(lambda e: -15 + e * 12)
+
+    return df
 
 
-# rough heuristics to fill in missing audio features when the API won't give them to us
+# standalone usage
+if __name__ == "__main__":
+    import sys
 
-def estimate_tempo(row):
-    genre = str(row['Primary Genre']).lower()
-    year = int(row['Release Year']) if pd.notna(row['Release Year']) and str(row['Release Year']).isdigit() else 2020
+    spotify_dir = Path(__file__).parent.parent.parent
+    os.chdir(str(spotify_dir))
 
-    if 'rap' in genre or 'hip hop' in genre:
-        base = 95
-    elif 'r&b' in genre:
-        base = 90
-    elif 'rock' in genre:
-        base = 120
-    elif 'pop' in genre:
-        base = 110
-    else:
-        base = 100
+    input_file = sys.argv[1] if len(sys.argv) > 1 else "spotify_playlist_ml_enhanced_amix.xlsx"
+    output_file = "spotify_playlist_complete.xlsx"
 
-    # newer songs trend slightly faster
-    era_adj = 0
-    if year < 1980: era_adj = -5
-    elif year < 2000: era_adj = 5
-    elif year >= 2010: era_adj = 10
+    if not os.path.exists(input_file):
+        print(f"File not found: {input_file}")
+        print("Usage: python add_missing_columns.py [input_file.xlsx]")
+        sys.exit(1)
 
-    pop_adj = (row['Popularity'] / 100 - 0.5) * 20
-    return max(60, min(180, base + era_adj + pop_adj))
+    df = pd.read_excel(input_file)
+    print(f"Loaded {len(df)} tracks from {input_file}")
 
+    df = estimate_audio_features(df)
 
-def estimate_danceability(row):
-    # songs near 100-130 BPM tend to be more danceable
-    tempo_factor = 1 - abs((row['Estimated_Tempo'] - 110) / 100)
-    pop_factor = row['Popularity'] / 100
-    return max(0.1, min(0.95, tempo_factor * 0.6 + pop_factor * 0.4))
+    df.to_excel(output_file, index=False)
+    print(f"Saved to {output_file}")
 
+    for col in ['tempo', 'danceability', 'energy', 'valence', 'acousticness', 'speechiness', 'instrumentalness']:
+        if col in df.columns:
+            print(f"  {col}: {df[col].mean():.2f} avg [{df[col].min():.2f} - {df[col].max():.2f}]")
 
-def estimate_energy(row):
-    pop_factor = row['Popularity'] / 100
-    explicit_bump = 0.1 if row['Explicit'] else 0
-    year = int(row['Release Year']) if pd.notna(row['Release Year']) and str(row['Release Year']).isdigit() else 2020
-    year_factor = (year - 1950) / 100
-    return max(0.1, min(0.95, pop_factor * 0.4 + year_factor * 0.4 + explicit_bump))
-
-
-def estimate_valence(row):
-    genre = str(row['Primary Genre']).lower()
-    if 'pop' in genre:
-        base = 0.7
-    elif 'r&b' in genre:
-        base = 0.6
-    elif 'rock' in genre:
-        base = 0.4
-    else:
-        base = 0.5
-    adj = (row['Popularity'] / 100 - 0.5) * 0.2
-    return max(0.1, min(0.95, base + adj))
-
-
-def estimate_acousticness(row):
-    return max(0.05, min(0.95, 1 - row['Estimated_Energy']))
-
-
-def estimate_speechiness(row):
-    genre = str(row['Primary Genre']).lower()
-    if 'rap' in genre or 'hip hop' in genre:
-        base = 0.7
-    elif 'r&b' in genre:
-        base = 0.3
-    else:
-        base = 0.1
-    adj = (row['Popularity'] / 100 - 0.5) * 0.1
-    return max(0.01, min(0.95, base + adj))
-
-
-def estimate_instrumentalness(row):
-    return max(0.01, min(0.95, 1 - row['Estimated_Speechiness']))
-
-
-# apply estimates in dependency order
-df['Estimated_Tempo'] = df.apply(estimate_tempo, axis=1)
-df['Estimated_Danceability'] = df.apply(estimate_danceability, axis=1)
-df['Estimated_Energy'] = df.apply(estimate_energy, axis=1)
-df['Estimated_Valence'] = df.apply(estimate_valence, axis=1)
-df['Estimated_Acousticness'] = df.apply(estimate_acousticness, axis=1)
-df['Estimated_Speechiness'] = df.apply(estimate_speechiness, axis=1)
-df['Estimated_Instrumentalness'] = df.apply(estimate_instrumentalness, axis=1)
-
-df.to_excel(output_file, index=False)
-
-ml_output = "spotify_playlist_ml_complete.xlsx"
-df_ml = df[[c for c in df.columns if c != 'Preview URL']]
-df_ml.to_excel(ml_output, index=False)
-
-data_dir = spotify_dir / 'data' / 'processed'
-data_dir.mkdir(parents=True, exist_ok=True)
-df.to_excel(data_dir / output_file, index=False)
-df_ml.to_excel(data_dir / ml_output, index=False)
-
-print(f"Saved to {output_file} and {ml_output}")
-print("\nEstimated feature ranges:")
-for col in [c for c in df.columns if c.startswith('Estimated_')]:
-    print(f"  {col}: {df[col].mean():.2f} avg, [{df[col].min():.2f} - {df[col].max():.2f}]")
-print("\nNote: these are rough estimates, not actual Spotify audio features")
+    print("\nNote: these are heuristic estimates, not actual Spotify audio features")

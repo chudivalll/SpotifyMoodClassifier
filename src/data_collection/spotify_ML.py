@@ -138,7 +138,11 @@ def get_playlist_tracks(playlist_id, batch_size=50, delay_between_batches=2, max
 
 
 def get_audio_features(track_ids, batch_size=20, delay_between_batches=3):
-    """Fetch audio features in batches."""
+    """Fetch audio features in batches.
+
+    Returns empty list if the endpoint is restricted (403) — this happens
+    for apps registered after Nov 2024 due to Spotify API changes.
+    """
     sp = create_spotify_client()
     all_features = []
     total = len(track_ids)
@@ -157,7 +161,12 @@ def get_audio_features(track_ids, batch_size=20, delay_between_batches=3):
                 valid = [f for f in features if f is not None]
                 all_features.extend(valid)
                 print(f"  {len(all_features)}/{total} processed")
-        except Exception as e:
+        except SpotifyException as e:
+            if e.http_status == 403:
+                print("\nAudio features endpoint returned 403 — your app doesn't have access.")
+                print("This is expected for apps registered after Nov 27, 2024.")
+                print("The pipeline will fall back to estimated features.\n")
+                return []
             if "rate limit" in str(e).lower():
                 time.sleep(30)
                 sp = create_spotify_client()
@@ -168,6 +177,9 @@ def get_audio_features(track_ids, batch_size=20, delay_between_batches=3):
                     continue
                 except:
                     pass
+            time.sleep(5)
+            continue
+        except Exception:
             time.sleep(5)
             continue
 
