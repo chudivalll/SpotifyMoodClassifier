@@ -162,6 +162,88 @@ tailwind.config = {
   </div>
 </section>
 
+<!-- WRAPPED PERSONALITY -->
+{% if analysis.wrapped is defined %}
+<section class="px-6 md:px-16 pb-16 scroll-reveal">
+  <div class="max-w-5xl mx-auto">
+    <div class="bg-ink text-sand rounded-3xl p-10 md:p-16 relative overflow-hidden">
+      <div class="absolute top-0 right-0 w-64 h-64 rounded-full mood-gradient-{{ analysis.wrapped.top_mood }} opacity-20 blur-3xl -translate-y-1/2 translate-x-1/3"></div>
+      <p class="text-xs font-bold uppercase tracking-widest mb-4 opacity-40">Your Playlist Personality</p>
+      <h2 class="text-3xl md:text-4xl font-bold mb-4 tracking-tight">{{ analysis.wrapped.personality }}</h2>
+      {% if analysis.wrapped.energy_arc %}
+      <p class="text-sm font-light opacity-60 leading-relaxed max-w-xl">{{ analysis.wrapped.energy_arc }}</p>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<!-- WRAPPED STATS GRID -->
+<section class="px-6 md:px-16 pb-16 scroll-reveal">
+  <div class="max-w-5xl mx-auto">
+    <p class="text-xs font-bold uppercase tracking-widest mb-8 opacity-50">By The Numbers</p>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="bg-white rounded-2xl p-6">
+        <p class="text-3xl font-bold">{{ analysis.wrapped.total_hours }}h</p>
+        <p class="text-xs opacity-50 mt-1">Total runtime</p>
+      </div>
+      <div class="bg-white rounded-2xl p-6">
+        <p class="text-3xl font-bold">{{ analysis.wrapped.unique_artists }}</p>
+        <p class="text-xs opacity-50 mt-1">Unique artists</p>
+      </div>
+      <div class="bg-white rounded-2xl p-6">
+        <p class="text-3xl font-bold">{{ analysis.wrapped.avg_tempo }}</p>
+        <p class="text-xs opacity-50 mt-1">Avg BPM</p>
+      </div>
+      <div class="bg-white rounded-2xl p-6">
+        <p class="text-3xl font-bold">{{ analysis.wrapped.explicit_pct }}%</p>
+        <p class="text-xs opacity-50 mt-1">Explicit</p>
+      </div>
+      <div class="bg-white rounded-2xl p-6">
+        <p class="text-3xl font-bold">{{ analysis.wrapped.avg_energy }}</p>
+        <p class="text-xs opacity-50 mt-1">Avg energy</p>
+      </div>
+      <div class="bg-white rounded-2xl p-6">
+        <p class="text-3xl font-bold">{{ analysis.wrapped.avg_valence }}</p>
+        <p class="text-xs opacity-50 mt-1">Avg positivity</p>
+      </div>
+      <div class="bg-white rounded-2xl p-6">
+        <p class="text-3xl font-bold">{{ analysis.wrapped.avg_danceability }}</p>
+        <p class="text-xs opacity-50 mt-1">Avg danceability</p>
+      </div>
+      <div class="bg-white rounded-2xl p-6">
+        <p class="text-3xl font-bold">{{ analysis.total_tracks }}</p>
+        <p class="text-xs opacity-50 mt-1">Total tracks</p>
+      </div>
+    </div>
+
+    {% if analysis.wrapped.oldest_track or analysis.wrapped.newest_track %}
+    <div class="grid md:grid-cols-2 gap-4 mt-4">
+      {% if analysis.wrapped.oldest_track %}
+      <div class="bg-white rounded-2xl p-6">
+        <p class="text-xs font-bold uppercase tracking-widest mb-2 opacity-40">Oldest Track</p>
+        <p class="text-sm font-semibold">{{ analysis.wrapped.oldest_track }}</p>
+      </div>
+      {% endif %}
+      {% if analysis.wrapped.newest_track %}
+      <div class="bg-white rounded-2xl p-6">
+        <p class="text-xs font-bold uppercase tracking-widest mb-2 opacity-40">Newest Track</p>
+        <p class="text-sm font-semibold">{{ analysis.wrapped.newest_track }}</p>
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+{% if analysis.has_real_features is defined and not analysis.has_real_features %}
+<section class="px-6 md:px-16 pb-8">
+  <div class="max-w-5xl mx-auto bg-amber-50 border border-amber-200 rounded-xl px-6 py-4 text-sm">
+    <span class="font-semibold">Note:</span> Spotify's audio features API is restricted for newer apps. BPM is scraped from songdata.io where available — other audio values (energy, valence, danceability) are estimated from genre and popularity. Mood classifications may be approximate.
+  </div>
+</section>
+{% endif %}
+
 <!-- MOOD BREAKDOWN -->
 <section class="px-6 md:px-16 pb-24 scroll-reveal">
   <div class="max-w-5xl mx-auto">
@@ -280,9 +362,10 @@ tailwind.config = {
     <p id="story-artist" class="text-sm opacity-60 mb-1"></p>
     <p id="story-album" class="text-xs opacity-40 mb-8"></p>
 
-    <div class="flex gap-3 mb-8 flex-wrap">
+    <div class="flex gap-3 mb-8 flex-wrap items-center">
       <span id="story-mood-pill" class="px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider"></span>
       <span id="story-tempo" class="px-4 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider border border-current opacity-60"></span>
+      <span id="story-estimated-badge" class="px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-yellow-500/20 text-yellow-400" style="display:none">Estimated</span>
     </div>
 
     <!-- stats -->
@@ -306,8 +389,29 @@ tailwind.config = {
       <p id="story-text" class="text-base leading-relaxed font-light"></p>
     </div>
 
+    <!-- AUDIO PREVIEW -->
+    <div id="story-player-section" class="mt-6 border-t border-gray-700 pt-6" style="display:none">
+      <p class="text-xs font-bold uppercase tracking-widest mb-4 opacity-40">Preview</p>
+      <div class="flex items-center gap-4 bg-white/5 rounded-xl p-4">
+        <button id="play-btn" onclick="togglePlay()" class="w-12 h-12 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors flex-shrink-0">
+          <svg id="play-icon" width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+          <svg id="pause-icon" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style="display:none"><rect x="5" y="3" width="4" height="18"/><rect x="15" y="3" width="4" height="18"/></svg>
+        </button>
+        <div class="flex-1 min-w-0">
+          <div class="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
+            <div id="progress-bar" class="h-full bg-white/50 rounded-full transition-all" style="width: 0%"></div>
+          </div>
+          <div class="flex justify-between mt-1">
+            <span id="current-time" class="text-[10px] opacity-40">0:00</span>
+            <span id="total-time" class="text-[10px] opacity-40">0:30</span>
+          </div>
+        </div>
+      </div>
+      <audio id="preview-audio" preload="none"></audio>
+    </div>
+
     <div id="story-era-section" class="mt-6">
-      <p class="text-xs font-bold uppercase tracking-widest mb-4 opacity-40">The Moment</p>
+      <p class="text-xs font-bold uppercase tracking-widest mb-4 opacity-40">Source</p>
       <p id="story-era" class="text-sm leading-relaxed font-light italic opacity-80"></p>
     </div>
   </div>
@@ -345,10 +449,19 @@ function openStory(idx) {
   moodPill.style.background = moodColors[card.mood] || '#666';
   moodPill.style.color = card.mood === 'happy' ? '#000' : '#fff';
 
-  document.getElementById('story-tempo').textContent = card.tempo + ' BPM';
+  const tempoLabel = card.tempo + ' BPM' + (card.estimated_bpm ? ' ~' : '');
+  document.getElementById('story-tempo').textContent = tempoLabel;
   document.getElementById('story-energy').textContent = card.energy;
   document.getElementById('story-valence').textContent = card.valence;
   document.getElementById('story-dance').textContent = card.danceability;
+
+  const estBadge = document.getElementById('story-estimated-badge');
+  if (card.estimated) {
+    estBadge.style.display = 'inline-block';
+    estBadge.textContent = card.estimated_bpm ? 'BPM Estimated' : 'Features Estimated';
+  } else {
+    estBadge.style.display = 'none';
+  }
 
   document.getElementById('story-text').textContent = card.story;
 
@@ -361,6 +474,21 @@ function openStory(idx) {
     eraSection.style.display = 'none';
   }
 
+  // audio preview
+  const playerSection = document.getElementById('story-player-section');
+  if (card.preview_url) {
+    playerSection.style.display = 'block';
+    audioEl.src = card.preview_url;
+    audioEl.load();
+    progressBar.style.width = '0%';
+    currentTimeEl.textContent = '0:00';
+    isPlaying = false;
+    document.getElementById('play-icon').style.display = '';
+    document.getElementById('pause-icon').style.display = 'none';
+  } else {
+    playerSection.style.display = 'none';
+  }
+
   panel.classList.add('open');
   backdrop.classList.add('open');
   document.body.style.overflow = 'hidden';
@@ -370,6 +498,50 @@ function closeStory() {
   document.getElementById('story-panel').classList.remove('open');
   document.getElementById('overlay-backdrop').classList.remove('open');
   document.body.style.overflow = '';
+  // stop audio
+  audioEl.pause();
+  audioEl.currentTime = 0;
+  isPlaying = false;
+  document.getElementById('play-icon').style.display = '';
+  document.getElementById('pause-icon').style.display = 'none';
+}
+
+// audio player
+const audioEl = document.getElementById('preview-audio');
+const progressBar = document.getElementById('progress-bar');
+const currentTimeEl = document.getElementById('current-time');
+let isPlaying = false;
+
+audioEl.addEventListener('timeupdate', () => {
+  if (audioEl.duration) {
+    const pct = (audioEl.currentTime / audioEl.duration) * 100;
+    progressBar.style.width = pct + '%';
+    const mins = Math.floor(audioEl.currentTime / 60);
+    const secs = Math.floor(audioEl.currentTime % 60).toString().padStart(2, '0');
+    currentTimeEl.textContent = mins + ':' + secs;
+  }
+});
+
+audioEl.addEventListener('ended', () => {
+  isPlaying = false;
+  document.getElementById('play-icon').style.display = '';
+  document.getElementById('pause-icon').style.display = 'none';
+  progressBar.style.width = '0%';
+  currentTimeEl.textContent = '0:00';
+});
+
+function togglePlay() {
+  if (isPlaying) {
+    audioEl.pause();
+    isPlaying = false;
+    document.getElementById('play-icon').style.display = '';
+    document.getElementById('pause-icon').style.display = 'none';
+  } else {
+    audioEl.play();
+    isPlaying = true;
+    document.getElementById('play-icon').style.display = 'none';
+    document.getElementById('pause-icon').style.display = '';
+  }
 }
 
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeStory(); });
@@ -398,7 +570,7 @@ document.querySelectorAll('.scroll-reveal').forEach(el => observer.observe(el));
 
     <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-5">
       {% for pl in playlists %}
-      <a href="/analyze/{{ pl.id }}" class="group block bg-white rounded-xl overflow-hidden shadow-sm hover:shadow-lg transition-shadow fade-in stagger-{{ (loop.index % 6) + 1 }}">
+      <a href="/loading/{{ pl.id }}" class="group block bg-white rounded-xl overflow-hidden shadow-sm hover:shadow-lg transition-shadow fade-in stagger-{{ (loop.index % 6) + 1 }}">
         {% if pl.image %}
         <img src="{{ pl.image }}" alt="{{ pl.name }}" class="w-full aspect-square object-cover group-hover:scale-105 transition-transform duration-500">
         {% else %}

@@ -7,6 +7,7 @@ import hashlib
 import base64
 import urllib.parse
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask, render_template, request, redirect, session, jsonify
 import requests
 import pandas as pd
@@ -19,10 +20,201 @@ from src.mood_classifier import classify_mood, assign_moods
 app = Flask(__name__)
 app.secret_key = os.urandom(32)
 
+from urllib.parse import quote as url_quote
+
+WIKI_HEADERS = {'User-Agent': 'MoodboardApp/1.0 (playlist analyzer project)'}
+
+# cache to avoid re-fetching the same artist/song during a single analysis
+_wiki_cache = {}
+
+
+def get_wiki_song_info(track_name, artist_name):
+    """Fetch song or artist info from Wikipedia. Returns (text, source_type) or (None, None)."""
+    cache_key = f"{track_name.lower()}|{artist_name.lower()}"
+    if cache_key in _wiki_cache:
+        return _wiki_cache[cache_key]
+
+    result = _try_wiki_song(track_name, artist_name)
+    if not result:
+        result = _try_wiki_artist(artist_name)
+    if not result:
+        result = (None, None)
+
+    _wiki_cache[cache_key] = result
+    return result
+
+
+def _try_wiki_song(track_name, artist_name):
+    """Search Wikipedia for a song page."""
+    clean_name = track_name.replace('.', '').strip()
+    queries = [
+        f'"{clean_name}" {artist_name} song',
+        f'{clean_name} (song)',
+    ]
+
+    for query in queries:
+        try:
+            url = f'https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={url_quote(query)}&format=json&srlimit=3'
+            resp = requests.get(url, timeout=6, headers=WIKI_HEADERS)
+            if resp.status_code != 200:
+                continue
+
+            for r in resp.json().get('query', {}).get('search', []):
+                title = r['title']
+                snippet = r.get('snippet', '').lower()
+
+                # verify the result actually relates to the song or artist
+                title_lower = title.lower()
+                artist_first = artist_name.lower().split()[0]
+                track_first = clean_name.lower().split()[0] if clean_name else ''
+
+                if artist_first not in snippet and artist_first not in title_lower:
+                    continue
+                # skip unrelated pages
+                skip_words = ['disambiguation', 'discography', 'list of', 'grammy', 'award', 'category', 'billboard']
+                if any(w in title_lower for w in skip_words):
+                    continue
+
+                summary = _fetch_wiki_summary(title)
+                if summary and len(summary) > 80:
+                    return (summary, 'song')
+        except Exception:
+            continue
+    return None
+
+
+def _try_wiki_artist(artist_name):
+    """Search Wikipedia for an artist page."""
+    for suffix in ['musician', 'rapper', 'singer', 'band']:
+        try:
+            url = f'https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={url_quote(artist_name + " " + suffix)}&format=json&srlimit=2'
+            resp = requests.get(url, timeout=6, headers=WIKI_HEADERS)
+            if resp.status_code != 200:
+                continue
+
+            for r in resp.json().get('query', {}).get('search', []):
+                title = r['title']
+                if 'disambiguation' in title.lower() or 'discography' in title.lower():
+                    continue
+
+                # verify artist name appears in the title or snippet
+                if artist_name.lower().split()[0] not in title.lower() and artist_name.lower().split()[0] not in r.get('snippet', '').lower():
+                    continue
+
+                summary = _fetch_wiki_summary(title)
+                if summary and len(summary) > 80:
+                    return (summary, 'artist')
+        except Exception:
+            continue
+    return None
+
+
+def _fetch_wiki_summary(title):
+    """Get the extract from a Wikipedia page."""
+    try:
+        url = f'https://en.wikipedia.org/api/rest_v1/page/summary/{url_quote(title)}'
+        resp = requests.get(url, timeout=6, headers=WIKI_HEADERS)
+        if resp.status_code == 200:
+            return resp.json().get('extract', '')
+    except Exception:
+        pass
+    return None
+
+
+def _shorten_wiki(text, max_sentences=4):
+    """Take the first few sentences of a Wikipedia extract."""
+    sentences = text.split('. ')
+    short = '. '.join(sentences[:max_sentences])
+    if not short.endswith('.'):
+        short += '.'
+    return short
+
+
+def get_genius_description(track_name, artist_name):
+    """Fetch song description from Genius's API. Returns string or None."""
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36'}
+        query = url_quote(f"{track_name} {artist_name}")
+        resp = requests.get(f"https://genius.com/api/search/multi?q={query}", headers=headers, timeout=8)
+        if resp.status_code != 200:
+            return None
+
+        song_id = None
+        for section in resp.json().get('response', {}).get('sections', []):
+            for hit in section.get('hits', []):
+                r = hit.get('result', {})
+                if r.get('_type') == 'song':
+                    song_id = r.get('id')
+                    break
+            if song_id:
+                break
+
+        if not song_id:
+            return None
+
+        song_resp = requests.get(f"https://genius.com/api/songs/{song_id}?text_format=plain", headers=headers, timeout=8)
+        if song_resp.status_code != 200:
+            return None
+
+        desc = song_resp.json().get('response', {}).get('song', {}).get('description', {})
+        if isinstance(desc, dict):
+            plain = desc.get('plain', '')
+            if plain and plain != '?' and len(plain) > 20:
+                return plain
+        return None
+    except Exception:
+        return None
+
+
+def get_itunes_preview(track_name, artist_name):
+    """Get a 30-second preview URL and artwork from iTunes. Returns dict or None."""
+    try:
+        query = url_quote(f"{track_name} {artist_name}")
+        resp = requests.get(f"https://itunes.apple.com/search?term={query}&media=music&limit=1", timeout=8)
+        if resp.status_code != 200:
+            return None
+
+        results = resp.json().get('results', [])
+        if not results:
+            return None
+
+        r = results[0]
+        preview = r.get('previewUrl', '')
+        artwork = r.get('artworkUrl100', '').replace('100x100', '600x600')
+        return {'preview_url': preview, 'artwork_url': artwork} if preview else None
+    except Exception:
+        return None
+
+
+def get_bpm_from_deezer(track_name, artist_name):
+    """Get real BPM from Deezer's free API. Returns float or None."""
+    try:
+        query = url_quote(f"{track_name} {artist_name}")
+        resp = requests.get(f"https://api.deezer.com/search?q={query}&limit=1", timeout=8)
+        if resp.status_code != 200:
+            return None
+
+        data = resp.json()
+        tracks = data.get('data', [])
+        if not tracks:
+            return None
+
+        track_id = tracks[0]['id']
+        detail = requests.get(f"https://api.deezer.com/track/{track_id}", timeout=8)
+        if detail.status_code != 200:
+            return None
+
+        bpm = detail.json().get('bpm', 0)
+        if bpm and bpm > 0:
+            return round(bpm)
+        return None
+    except Exception:
+        return None
+
 # Spotify OAuth config — set these in .env or environment
 CLIENT_ID = os.getenv('SPOTIFY_CLIENT_ID', '')
 CLIENT_SECRET = os.getenv('SPOTIFY_CLIENT_SECRET', '')
-REDIRECT_URI = 'http://127.0.0.1:5000/callback'
+REDIRECT_URI = 'http://127.0.0.1:8888/callback'
 SCOPE = 'playlist-read-private playlist-read-collaborative user-library-read'
 
 SPOTIFY_AUTH_URL = 'https://accounts.spotify.com/authorize'
@@ -141,29 +333,71 @@ GENERIC_STORIES = [
 ]
 
 
-def get_song_story(track_name):
-    """Get cultural context for a song."""
+def get_song_story(track_name, artist_name=''):
+    """Get cultural context for a song. Tries Genius → handwritten → Wikipedia → fallback."""
     key = track_name.lower().strip()
-    # exact match
+
+    # 1. try Genius (best quality — real song descriptions like on their About page)
+    genius_desc = get_genius_description(track_name, artist_name)
+    if genius_desc and len(genius_desc) > 40:
+        # take first ~500 chars to keep it readable
+        short = genius_desc[:500]
+        if len(genius_desc) > 500:
+            # cut at last sentence boundary
+            last_period = short.rfind('. ')
+            if last_period > 200:
+                short = short[:last_period + 1]
+        return {
+            "story": short,
+            "era": "via Genius",
+            "image_mood": "default"
+        }
+
+    # 2. check handwritten stories (curated, high quality)
     if key in SONG_STORIES:
         return SONG_STORIES[key]
-    # partial match
     for k, v in SONG_STORIES.items():
         if k in key or key in k:
             return v
-    # generic fallback
+
+    # 3. try Wikipedia
+    wiki_text, source_type = get_wiki_song_info(track_name, artist_name)
+    if wiki_text:
+        short = _shorten_wiki(wiki_text, max_sentences=4)
+        label = f"About {artist_name}" if source_type == 'artist' else ""
+        return {
+            "story": short,
+            "era": label,
+            "image_mood": "default"
+        }
+
+    # 4. fallback
     return {
-        "story": random.choice(GENERIC_STORIES),
+        "story": f"No detailed info found for \"{track_name}\" by {artist_name}.",
         "era": "",
         "image_mood": "default"
     }
 
 
+MAX_DETAILED_TRACKS = 50  # only fetch Genius/iTunes for this many tracks
+
+
+def _fetch_track_extras(track_name, artist_name):
+    """Fetch Genius story + iTunes preview for a single track. Runs in thread pool."""
+    story = get_song_story(track_name, artist_name)
+    itunes = get_itunes_preview(track_name, artist_name.split(',')[0].strip())
+    preview_url = itunes['preview_url'] if itunes else ''
+    return story, preview_url
+
+
 def analyze_playlist_data(tracks):
     """Run mood classification and build the wrapped-style analysis."""
+    global _wiki_cache
+    _wiki_cache = {}
+
     df = pd.DataFrame(tracks)
 
-    # try to assign moods if we have the features
+    # assign moods
     if 'energy' in df.columns and 'valence' in df.columns:
         df = assign_moods(df)
     else:
@@ -193,15 +427,43 @@ def analyze_playlist_data(tracks):
         decade_counts = decades.value_counts().sort_index().to_dict()
         decade_counts = {f"{k}s": v for k, v in decade_counts.items()}
 
-    # build track cards with stories
+    # column names
     name_col = 'name' if 'name' in df.columns else 'Name'
     artist_display = 'artist' if 'artist' in df.columns else 'Artist'
     album_col = 'album' if 'album' in df.columns else 'Album'
 
+    # fetch Genius + iTunes in parallel for first N tracks
+    detailed_count = min(len(df), MAX_DETAILED_TRACKS)
+    print(f"Fetching stories/previews for {detailed_count} tracks in parallel...")
+
+    extras = {}  # index -> (story, preview_url)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {}
+        for idx in range(detailed_count):
+            row = df.iloc[idx]
+            tn = row.get(name_col, 'Unknown')
+            ar = row.get(artist_display, 'Unknown')
+            futures[pool.submit(_fetch_track_extras, tn, ar)] = idx
+
+        for future in as_completed(futures):
+            idx = futures[future]
+            try:
+                story, preview_url = future.result()
+                extras[idx] = (story, preview_url)
+            except Exception:
+                extras[idx] = ({'story': '', 'era': '', 'image_mood': 'default'}, '')
+
+    # build cards
     cards = []
-    for _, row in df.iterrows():
+    for idx, row in df.iterrows():
         track_name = row.get(name_col, 'Unknown')
-        story = get_song_story(track_name)
+
+        if idx in extras:
+            story, preview_url = extras[idx]
+        else:
+            story = {'story': '', 'era': '', 'image_mood': 'default'}
+            preview_url = ''
+
         cards.append({
             'name': track_name,
             'artist': row.get(artist_display, 'Unknown'),
@@ -211,12 +473,84 @@ def analyze_playlist_data(tracks):
             'valence': round(row.get('valence', 0.5), 2),
             'danceability': round(row.get('danceability', 0.5), 2),
             'tempo': round(row.get('tempo', 120), 0),
-            'story': story['story'],
+            'story': story.get('story', ''),
             'era': story.get('era', ''),
             'image_mood': story.get('image_mood', 'default'),
             'album_art': row.get('album_art', ''),
             'release_date': str(row.get(date_col, '') if date_col else ''),
+            'estimated': bool(row.get('estimated', False)),
+            'estimated_bpm': bool(row.get('estimated_bpm', False)),
+            'preview_url': preview_url,
         })
+
+    # ---- WRAPPED-STYLE STATS ----
+    total_duration_ms = df['duration_ms'].sum() if 'duration_ms' in df.columns else 0
+    total_minutes = round(total_duration_ms / 60000)
+    total_hours = round(total_duration_ms / 3600000, 1)
+
+    avg_energy = round(df['energy'].mean(), 2) if 'energy' in df.columns else 0
+    avg_valence = round(df['valence'].mean(), 2) if 'valence' in df.columns else 0
+    avg_danceability = round(df['danceability'].mean(), 2) if 'danceability' in df.columns else 0
+    avg_tempo = round(df['tempo'].mean()) if 'tempo' in df.columns else 0
+
+    explicit_count = int(df['explicit'].sum()) if 'explicit' in df.columns else 0
+    explicit_pct = round(explicit_count / len(df) * 100) if len(df) > 0 else 0
+
+    unique_artists = df[artist_col].nunique() if artist_col else 0
+
+    # dominant mood = playlist personality
+    top_mood = max(mood_counts, key=mood_counts.get) if mood_counts else 'unknown'
+    personality_map = {
+        'happy': 'The Optimist — your playlist radiates good energy. You reach for music that lifts you up.',
+        'sad': 'The Deep Feeler — you sit with your emotions. Your playlist is a space for reflection and honesty.',
+        'aggressive': 'The Intensity Seeker — you want music that hits hard. Your playlist is built for power and release.',
+        'chill': 'The Cool Observer — your playlist flows easy. You gravitate toward laid-back, textured sounds.',
+        'unknown': 'Eclectic Listener — your playlist defies a single mood.'
+    }
+    personality = personality_map.get(top_mood, personality_map['unknown'])
+
+    # energy arc: how energy changes across the playlist
+    energy_arc = ''
+    if 'energy' in df.columns and len(df) > 10:
+        first_half = df['energy'].iloc[:len(df)//2].mean()
+        second_half = df['energy'].iloc[len(df)//2:].mean()
+        if second_half > first_half + 0.05:
+            energy_arc = 'Your playlist builds energy as it goes — starts mellow and ends strong.'
+        elif first_half > second_half + 0.05:
+            energy_arc = 'Your playlist winds down over time — front-loaded with energy, easing into calmer sounds.'
+        else:
+            energy_arc = 'Your playlist keeps a steady energy throughout — consistent vibes from start to finish.'
+
+    # oldest and newest track
+    oldest_track = ''
+    newest_track = ''
+    if date_col and date_col in df.columns:
+        valid_dates = df[df[date_col].astype(str).str.len() >= 4].copy()
+        if len(valid_dates) > 0:
+            valid_dates['_year'] = pd.to_numeric(valid_dates[date_col].astype(str).str[:4], errors='coerce')
+            valid_dates = valid_dates.dropna(subset=['_year'])
+            if len(valid_dates) > 0:
+                oldest_idx = valid_dates['_year'].idxmin()
+                newest_idx = valid_dates['_year'].idxmax()
+                oldest_track = f"{df.loc[oldest_idx, name_col]} ({int(valid_dates.loc[oldest_idx, '_year'])})"
+                newest_track = f"{df.loc[newest_idx, name_col]} ({int(valid_dates.loc[newest_idx, '_year'])})"
+
+    wrapped = {
+        'total_minutes': total_minutes,
+        'total_hours': total_hours,
+        'avg_energy': avg_energy,
+        'avg_valence': avg_valence,
+        'avg_danceability': avg_danceability,
+        'avg_tempo': avg_tempo,
+        'explicit_count': explicit_count,
+        'explicit_pct': explicit_pct,
+        'unique_artists': unique_artists,
+        'top_mood': top_mood,
+        'personality': personality,
+        'energy_arc': energy_arc,
+        'oldest_track': oldest_track,
+        'newest_track': newest_track,
+    }
 
     return {
         'mood_counts': mood_counts,
@@ -225,6 +559,8 @@ def analyze_playlist_data(tracks):
         'decade_counts': decade_counts,
         'total_tracks': len(df),
         'cards': cards,
+        'has_real_features': not any(c.get('estimated') for c in cards),
+        'wrapped': wrapped,
     }
 
 
@@ -303,6 +639,33 @@ def playlists():
                            playlists=playlists_data,
                            user=user,
                            client_id=CLIENT_ID)
+
+
+@app.route('/loading/<playlist_id>')
+def loading(playlist_id):
+    """Show a loading page that redirects to the analysis."""
+    token = session.get('access_token')
+    if not token:
+        return redirect('/login')
+
+    headers = {'Authorization': f'Bearer {token}'}
+    pl_resp = requests.get(f'{SPOTIFY_API_BASE}/playlists/{playlist_id}?fields=name,tracks.total,images',
+                           headers=headers)
+    pl_name = 'Playlist'
+    pl_image = ''
+    pl_total = 0
+    if pl_resp.status_code == 200:
+        info = pl_resp.json()
+        pl_name = info.get('name', 'Playlist')
+        pl_total = info.get('tracks', {}).get('total', 0)
+        if info.get('images'):
+            pl_image = info['images'][0]['url']
+
+    return render_template('loading.html',
+                           playlist_id=playlist_id,
+                           playlist_name=pl_name,
+                           playlist_image=pl_image,
+                           track_count=pl_total)
 
 
 @app.route('/analyze/<playlist_id>')
@@ -390,12 +753,30 @@ def analyze(playlist_id):
             track['instrumentalness'] = af.get('instrumentalness', 0.0)
             track['loudness'] = af.get('loudness', -6.0)
 
-    # if no audio features, estimate them
+    # if no audio features, try BPM scraping then estimate the rest
+    has_real_features = bool(audio_features)
     if not audio_features:
         from src.data_processing.add_missing_columns import estimate_audio_features
+
+        # get real BPM from Deezer's free API
+        print(f"Audio features unavailable — fetching BPM from Deezer for {len(tracks)} tracks...")
+        for i, t in enumerate(tracks):
+            bpm = get_bpm_from_deezer(t['name'], t['artist'].split(',')[0].strip())
+            if bpm:
+                t['tempo'] = bpm
+                t['_has_real_bpm'] = True
+
         df = pd.DataFrame(tracks)
         df = estimate_audio_features(df)
         tracks = df.to_dict('records')
+
+        # mark all tracks as estimated
+        for t in tracks:
+            t['estimated'] = True
+            if t.get('_has_real_bpm'):
+                t['estimated_bpm'] = False
+            else:
+                t['estimated_bpm'] = True
 
     # get artist genres for tracks
     artist_names = list(set(t['artist'].split(',')[0].strip() for t in tracks))
@@ -468,4 +849,4 @@ if __name__ == '__main__':
     load_dotenv(project_root / '.env')
     CLIENT_ID = os.getenv('SPOTIFY_CLIENT_ID', '')
     CLIENT_SECRET = os.getenv('SPOTIFY_CLIENT_SECRET', '')
-    app.run(debug=True, port=5000)
+    app.run(debug=False, port=8888)

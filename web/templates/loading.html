@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Analyzing — Moodboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+  body {
+    font-family: 'Inter', sans-serif;
+    background: #0E0E0E;
+    color: #F1F1F1;
+    -webkit-font-smoothing: antialiased;
+    letter-spacing: -0.04em;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .pulse-ring {
+    animation: pulse 2s cubic-bezier(0.5, 0, 0, 1) infinite;
+  }
+  @keyframes pulse {
+    0% { transform: scale(1); opacity: 0.6; }
+    50% { transform: scale(1.15); opacity: 0.3; }
+    100% { transform: scale(1); opacity: 0.6; }
+  }
+  .spin {
+    animation: spin 3s linear infinite;
+  }
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+  .status-text {
+    animation: fadeSwitch 8s ease-in-out infinite;
+  }
+  @keyframes fadeSwitch {
+    0%, 20% { opacity: 1; }
+    25%, 45% { opacity: 0; }
+    50%, 70% { opacity: 1; }
+    75%, 95% { opacity: 0; }
+    100% { opacity: 1; }
+  }
+</style>
+</head>
+<body>
+
+<div class="text-center px-6">
+  {% if playlist_image %}
+  <div class="relative inline-block mb-10">
+    <div class="absolute inset-0 rounded-2xl pulse-ring" style="background: linear-gradient(135deg, #F59E0B, #EF4444, #6366F1, #10B981); filter: blur(30px);"></div>
+    <img src="{{ playlist_image }}" class="relative w-40 h-40 rounded-2xl object-cover shadow-2xl" alt="{{ playlist_name }}">
+  </div>
+  {% else %}
+  <div class="mb-10">
+    <div class="w-16 h-16 mx-auto border-2 border-white/20 border-t-white/80 rounded-full spin"></div>
+  </div>
+  {% endif %}
+
+  <h1 class="text-3xl md:text-4xl font-bold tracking-tight mb-3">Analyzing {{ playlist_name }}</h1>
+  <p class="text-sm font-light opacity-40 mb-8">{{ track_count }} tracks</p>
+
+  <div class="space-y-2 text-sm font-light opacity-50">
+    <p id="status">Fetching tracks from Spotify...</p>
+  </div>
+</div>
+
+<script>
+const messages = [
+  'Fetching tracks from Spotify...',
+  'Looking up song details on Genius...',
+  'Analyzing mood patterns...',
+  'Scraping BPM data...',
+  'Finding audio previews...',
+  'Building your playlist wrapped...',
+  'Almost there...',
+];
+
+let msgIdx = 0;
+const statusEl = document.getElementById('status');
+
+setInterval(() => {
+  msgIdx = (msgIdx + 1) % messages.length;
+  statusEl.style.opacity = '0';
+  setTimeout(() => {
+    statusEl.textContent = messages[msgIdx];
+    statusEl.style.opacity = '1';
+  }, 300);
+}, 3000);
+
+statusEl.style.transition = 'opacity 0.3s';
+
+// redirect to actual analysis
+window.location.href = '/analyze/{{ playlist_id }}';
+</script>
+
+</body>
+</html>
